@@ -38,7 +38,7 @@ pub use crate::{
     transform::{PlotBounds, PlotTransform},
 };
 
-use axis::AxisWidget;
+use axis::{AxisWidget, AxisWidgets, Corners};
 use items::{horizontal_line, rulers_color, vertical_line};
 use legend::LegendWidget;
 
@@ -866,8 +866,12 @@ impl<'a> Plot<'a> {
         };
 
         let plot_id = id.unwrap_or_else(|| ui.make_persistent_id(id_source));
-
-        let ([x_axis_widgets, y_axis_widgets], plot_rect) = axis_widgets(
+        let AxisWidgets {
+            rect: plot_rect,
+            x: x_axis_widgets,
+            y: y_axis_widgets,
+            corners: corner_widgets,
+        } = axis_widgets(
             PlotMemory::load(ui.ctx(), plot_id).as_ref(), // TODO(emilk): avoid loading plot memory twice
             show_axes,
             complete_rect,
@@ -901,6 +905,26 @@ impl<'a> Plot<'a> {
                 }
             })
             .collect::<Vec<_>>();
+
+        let corner_responses = corner_widgets.map(|rect, corner_type| {
+            rect.map(|rect| {
+                let corner_response = ui.allocate_rect(rect, Sense::drag());
+
+                if allow_axis_zoom_drag.all() {
+                    let cursor = match corner_type {
+                        axis::CornerType::NorthEast => CursorIcon::ResizeNorthEast,
+                        axis::CornerType::NorthWest => CursorIcon::ResizeNorthWest,
+                        axis::CornerType::SouthWest => CursorIcon::ResizeSouthWest,
+                        axis::CornerType::SouthEast => CursorIcon::ResizeSouthEast,
+                    };
+                    corner_response.on_hover_cursor(cursor)
+                } else {
+                    corner_response
+                }
+            })
+        });
+
+        // @Mick: check here for where the rects are created, this is also where the corner drag should probs be impl'd
 
         // Load or initialize the memory.
         ui.ctx().check_for_id_clash(plot_id, plot_rect, "Plot");
@@ -1163,6 +1187,10 @@ impl<'a> Plot<'a> {
             }
         }
 
+        if allow_axis_zoom_drag.all() {
+            fun_name(plot_rect, corner_responses, &mut mem);
+        }
+
         // Zooming
         let mut boxed_zoom_rect = None;
         if allow_boxed_zoom {
@@ -1382,13 +1410,63 @@ impl<'a> Plot<'a> {
     }
 }
 
+// TODO(Mick): this should be cleaned up, as well as figure out the consts for zooming behavior
+fn fun_name(plot_rect: Rect, corner_responses: Corners<Option<Response>>, mem: &mut PlotMemory) {
+    for (response, corner) in corner_responses
+        .into_iter()
+        .filter_map(|(r, corner)| r.map(|r| (r, corner)))
+        .filter(|(r, _)| r.dragged_by(PointerButton::Primary))
+    {
+        let delta = response.drag_delta();
+        let (zoom, zoom_center) = match corner {
+            axis::CornerType::NorthEast => {
+                let zoom = (Vec2::new(0.02, 0.02) * delta)
+                    .clamp(Vec2::splat(-0.5), Vec2::splat(0.5))
+                    + Vec2::ONE;
+                let zoom_center = plot_rect.left_bottom();
+
+                (zoom, zoom_center)
+            }
+            axis::CornerType::NorthWest => {
+                let zoom = (Vec2::new(0.02, 0.02) * delta)
+                    .clamp(Vec2::splat(-0.5), Vec2::splat(0.5))
+                    + Vec2::ONE;
+                let zoom_center = plot_rect.right_bottom();
+
+                (zoom, zoom_center)
+            }
+            axis::CornerType::SouthWest => {
+                let zoom = (Vec2::new(-0.02, 0.02) * delta)
+                    .clamp(Vec2::splat(-0.5), Vec2::splat(0.5))
+                    + Vec2::ONE;
+                let zoom_center = plot_rect.right_top();
+
+                (zoom, zoom_center)
+            }
+            axis::CornerType::SouthEast => {
+                let zoom = (Vec2::new(0.02, 0.02) * delta)
+                    .clamp(Vec2::splat(-0.5), Vec2::splat(0.5))
+                    + Vec2::ONE;
+                let zoom_center = plot_rect.left_top();
+
+                (zoom, zoom_center)
+            }
+        };
+
+        if zoom != Vec2::ONE {
+            mem.transform.zoom(zoom, zoom_center);
+            mem.auto_bounds = false.into();
+        }
+    }
+}
+
 /// Returns the rect left after adding axes.
 fn axis_widgets<'a>(
     mem: Option<&PlotMemory>,
     show_axes: impl Into<Vec2b>,
     complete_rect: Rect,
     [x_axes, y_axes]: [&'a [AxisHints<'a>]; 2],
-) -> ([Vec<AxisWidget<'a>>; 2], Rect) {
+) -> AxisWidgets<'a> {
     // Next we want to create this layout.
     // Indices are only examples.
     //
@@ -1415,9 +1493,17 @@ fn axis_widgets<'a>(
 
     let mut x_axis_widgets = Vec::<AxisWidget<'_>>::new();
     let mut y_axis_widgets = Vec::<AxisWidget<'_>>::new();
+    let mut corner_rects = Corners {
+        ne: Rect::ZERO,
+        nw: Rect::ZERO,
+        sw: Rect::ZERO,
+        se: Rect::ZERO,
+    };
 
     // Will shrink as we add more axes.
     let mut rect_left = complete_rect;
+
+    let has_corners = show_axes.all();
 
     if show_axes.x {
         // We will fix this later, once we know how much space the y axes take up.
@@ -1432,12 +1518,24 @@ fn axis_widgets<'a>(
 
             let rect = match VPlacement::from(cfg.placement) {
                 VPlacement::Bottom => {
+                    if has_corners {
+                        // bottom corners' tops move upwards
+                        *corner_rects.se.top_mut() -= height;
+                        *corner_rects.sw.top_mut() -= height;
+                    }
+
                     let bottom = rect_left.bottom();
                     *rect_left.bottom_mut() -= height;
                     let top = rect_left.bottom();
                     Rect::from_x_y_ranges(initial_x_range, top..=bottom)
                 }
                 VPlacement::Top => {
+                    if has_corners {
+                        // top corners' bottoms move downwards
+                        *corner_rects.ne.bottom_mut() += height;
+                        *corner_rects.nw.bottom_mut() += height;
+                    }
+
                     let top = rect_left.top();
                     *rect_left.top_mut() += height;
                     let bottom = rect_left.top();
@@ -1460,12 +1558,24 @@ fn axis_widgets<'a>(
 
             let rect = match HPlacement::from(cfg.placement) {
                 HPlacement::Left => {
+                    if has_corners {
+                        // left corners' rights move rightward
+                        *corner_rects.nw.right_mut() += width;
+                        *corner_rects.sw.right_mut() += width;
+                    }
+
                     let left = rect_left.left();
                     *rect_left.left_mut() += width;
                     let right = rect_left.left();
                     Rect::from_x_y_ranges(left..=right, plot_y_range)
                 }
                 HPlacement::Right => {
+                    if has_corners {
+                        // right corners' lefts move leftward
+                        *corner_rects.ne.left_mut() -= width;
+                        *corner_rects.se.left_mut() -= width;
+                    }
+
                     let right = rect_left.right();
                     *rect_left.right_mut() -= width;
                     let left = rect_left.right();
@@ -1497,7 +1607,102 @@ fn axis_widgets<'a>(
         widget.rect = Rect::from_x_y_ranges(plot_rect.x_range(), widget.rect.y_range());
     }
 
-    ([x_axis_widgets, y_axis_widgets], plot_rect)
+    // gets the union of top and bottom rects, if they exist
+    let (bottom, top) = x_axis_widgets
+        .iter()
+        .map(|widget| (widget.rect, widget.hints.placement))
+        .fold((None, None), |mut acc, (rect, placement)| {
+            match placement {
+                Placement::LeftBottom => {
+                    acc.0 = Some(acc.0.get_or_insert(rect).union(rect));
+                }
+                Placement::RightTop => {
+                    acc.1 = Some(acc.1.get_or_insert(rect).union(rect));
+                }
+            }
+
+            acc
+        });
+
+    // gets the union of the left and right rects, if they exist
+    let (left, right) = y_axis_widgets
+        .iter()
+        .map(|widget| (widget.rect, widget.hints.placement))
+        .fold((None, None), |mut acc, (rect, placement)| {
+            match placement {
+                Placement::LeftBottom => {
+                    acc.0 = Some(acc.0.get_or_insert(rect).union(rect));
+                }
+                Placement::RightTop => {
+                    acc.1 = Some(acc.1.get_or_insert(rect).union(rect));
+                }
+            }
+            acc
+        });
+
+    let corner_rects = corner_rects.map(|mut rect, corner| {
+        // update the locations of the rects based on the x/y axis widget total locations
+
+        match corner {
+            axis::CornerType::NorthEast => {
+                // translate the rect by top/right
+                top.zip(right)
+                    .map(|(top, right)| Pos2 {
+                        x: right.center().x,
+                        y: top.center().y,
+                    })
+                    .map(|center| {
+                        rect.set_center(center);
+                        rect
+                    })
+            }
+            axis::CornerType::NorthWest => {
+                // translate the rect by top/left
+                top.zip(left)
+                    .map(|(top, left)| Pos2 {
+                        x: left.center().x,
+                        y: top.center().y,
+                    })
+                    .map(|center| {
+                        rect.set_center(center);
+                        rect
+                    })
+            }
+            axis::CornerType::SouthWest => {
+                // translate the rect by bot/left
+                bottom
+                    .zip(left)
+                    .map(|(bottom, left)| Pos2 {
+                        x: left.center().x,
+                        y: bottom.center().y,
+                    })
+                    .map(|center| {
+                        rect.set_center(center);
+                        rect
+                    })
+            }
+            axis::CornerType::SouthEast => {
+                // translate the rect by bot/right
+                bottom
+                    .zip(right)
+                    .map(|(bottom, right)| Pos2 {
+                        x: right.center().x,
+                        y: bottom.center().y,
+                    })
+                    .map(|center| {
+                        rect.set_center(center);
+                        rect
+                    })
+            }
+        }
+    });
+
+    AxisWidgets {
+        rect: plot_rect,
+        x: x_axis_widgets,
+        y: y_axis_widgets,
+        corners: corner_rects,
+    }
 }
 
 /// User-requested modifications to the plot bounds. We collect them in the plot build function to later apply
