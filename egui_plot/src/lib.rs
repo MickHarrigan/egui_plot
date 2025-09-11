@@ -906,8 +906,9 @@ impl<'a> Plot<'a> {
             })
             .collect::<Vec<_>>();
 
+        // NOTE(Mick): if `data_aspect` is set the corners don't get added :(
         let corner_responses = corner_widgets.map(|rect, corner_type| {
-            rect.map(|rect| {
+            rect.filter(|_| data_aspect.is_none()).map(|rect| {
                 let corner_response = ui.allocate_rect(rect, Sense::drag());
 
                 if allow_axis_zoom_drag.all() {
@@ -923,8 +924,6 @@ impl<'a> Plot<'a> {
                 }
             })
         });
-
-        // @Mick: check here for where the rects are created, this is also where the corner drag should probs be impl'd
 
         // Load or initialize the memory.
         ui.ctx().check_for_id_clash(plot_id, plot_rect, "Plot");
@@ -1188,7 +1187,7 @@ impl<'a> Plot<'a> {
         }
 
         if allow_axis_zoom_drag.all() {
-            fun_name(plot_rect, corner_responses, &mut mem);
+            corner_drag_zoom(plot_rect, corner_responses, &mut mem);
         }
 
         // Zooming
@@ -1410,47 +1409,35 @@ impl<'a> Plot<'a> {
     }
 }
 
-// TODO(Mick): this should be cleaned up, as well as figure out the consts for zooming behavior
-fn fun_name(plot_rect: Rect, corner_responses: Corners<Option<Response>>, mem: &mut PlotMemory) {
+// TODO(Mick): figure out the consts for zooming behavior
+fn corner_drag_zoom(
+    plot_rect: Rect,
+    corner_responses: Corners<Option<Response>>,
+    mem: &mut PlotMemory,
+) {
     for (response, corner) in corner_responses
         .into_iter()
         .filter_map(|(r, corner)| r.map(|r| (r, corner)))
         .filter(|(r, _)| r.dragged_by(PointerButton::Primary))
     {
         let delta = response.drag_delta();
-        let (zoom, zoom_center) = match corner {
-            axis::CornerType::NorthEast => {
-                let zoom = (Vec2::new(0.02, 0.02) * delta)
-                    .clamp(Vec2::splat(-0.5), Vec2::splat(0.5))
-                    + Vec2::ONE;
-                let zoom_center = plot_rect.left_bottom();
+        let zoom_scale = Vec2::splat(0.02);
 
-                (zoom, zoom_center)
-            }
-            axis::CornerType::NorthWest => {
-                let zoom = (Vec2::new(0.02, 0.02) * delta)
-                    .clamp(Vec2::splat(-0.5), Vec2::splat(0.5))
-                    + Vec2::ONE;
-                let zoom_center = plot_rect.right_bottom();
+        let zoom_scale_dir = match corner {
+            axis::CornerType::NorthEast => Vec2::new(1.0, -1.0),
+            axis::CornerType::NorthWest => Vec2::splat(-1.0),
+            axis::CornerType::SouthWest => Vec2::new(-1.0, 1.0),
+            axis::CornerType::SouthEast => Vec2::splat(1.0),
+        };
 
-                (zoom, zoom_center)
-            }
-            axis::CornerType::SouthWest => {
-                let zoom = (Vec2::new(-0.02, 0.02) * delta)
-                    .clamp(Vec2::splat(-0.5), Vec2::splat(0.5))
-                    + Vec2::ONE;
-                let zoom_center = plot_rect.right_top();
+        let zoom = Vec2::ONE
+            + (zoom_scale * zoom_scale_dir * delta).clamp(Vec2::splat(-1.0), Vec2::splat(1.0));
 
-                (zoom, zoom_center)
-            }
-            axis::CornerType::SouthEast => {
-                let zoom = (Vec2::new(0.02, 0.02) * delta)
-                    .clamp(Vec2::splat(-0.5), Vec2::splat(0.5))
-                    + Vec2::ONE;
-                let zoom_center = plot_rect.left_top();
-
-                (zoom, zoom_center)
-            }
+        let zoom_center = match corner {
+            axis::CornerType::NorthEast => plot_rect.left_bottom(),
+            axis::CornerType::NorthWest => plot_rect.right_bottom(),
+            axis::CornerType::SouthWest => plot_rect.right_top(),
+            axis::CornerType::SouthEast => plot_rect.left_top(),
         };
 
         if zoom != Vec2::ONE {
