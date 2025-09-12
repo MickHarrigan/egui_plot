@@ -38,7 +38,7 @@ pub use crate::{
     transform::{PlotBounds, PlotTransform},
 };
 
-use axis::AxisWidget;
+use axis::{AxisWidget, AxisWidgets, Corners};
 use items::{horizontal_line, rulers_color, vertical_line};
 use legend::LegendWidget;
 
@@ -866,8 +866,12 @@ impl<'a> Plot<'a> {
         };
 
         let plot_id = id.unwrap_or_else(|| ui.make_persistent_id(id_source));
-
-        let ([x_axis_widgets, y_axis_widgets], plot_rect) = axis_widgets(
+        let AxisWidgets {
+            rect: plot_rect,
+            x: x_axis_widgets,
+            y: y_axis_widgets,
+            corners: corner_widgets,
+        } = axis_widgets(
             PlotMemory::load(ui.ctx(), plot_id).as_ref(), // TODO(emilk): avoid loading plot memory twice
             show_axes,
             complete_rect,
@@ -880,7 +884,8 @@ impl<'a> Plot<'a> {
         let x_axis_responses = x_axis_widgets
             .iter()
             .map(|widget| {
-                let axis_response = ui.allocate_rect(widget.rect, Sense::drag());
+                // FIXME(Mick): set back to drag!
+                let axis_response = ui.allocate_rect(widget.rect, Sense::click_and_drag());
                 if allow_axis_zoom_drag.x {
                     axis_response.on_hover_cursor(CursorIcon::ResizeHorizontal)
                 } else {
@@ -892,7 +897,8 @@ impl<'a> Plot<'a> {
         let y_axis_responses = y_axis_widgets
             .iter()
             .map(|widget| {
-                let axis_response = ui.allocate_rect(widget.rect, Sense::drag());
+                // FIXME(Mick): set back to drag!
+                let axis_response = ui.allocate_rect(widget.rect, Sense::click_and_drag());
 
                 if allow_axis_zoom_drag.y {
                     axis_response.on_hover_cursor(CursorIcon::ResizeVertical)
@@ -901,6 +907,25 @@ impl<'a> Plot<'a> {
                 }
             })
             .collect::<Vec<_>>();
+
+        // NOTE(Mick): if `data_aspect` is set the corners don't get added :(
+        let corner_responses = corner_widgets.map(|rect, corner_type| {
+            rect.filter(|_| data_aspect.is_none()).map(|rect| {
+                let corner_response = ui.allocate_rect(rect, Sense::drag());
+
+                if allow_axis_zoom_drag.all() {
+                    let cursor = match corner_type {
+                        axis::CornerType::NorthEast => CursorIcon::ResizeNorthEast,
+                        axis::CornerType::NorthWest => CursorIcon::ResizeNorthWest,
+                        axis::CornerType::SouthWest => CursorIcon::ResizeSouthWest,
+                        axis::CornerType::SouthEast => CursorIcon::ResizeSouthEast,
+                    };
+                    corner_response.on_hover_cursor(cursor)
+                } else {
+                    corner_response
+                }
+            })
+        });
 
         // Load or initialize the memory.
         ui.ctx().check_for_id_clash(plot_id, plot_rect, "Plot");
@@ -1127,6 +1152,58 @@ impl<'a> Plot<'a> {
             mem.auto_bounds = mem.auto_bounds.and(!allow_drag);
         }
 
+        x_axis_widgets
+            .iter()
+            .map(|widget| {
+                let low_rect = Rect::from_min_size(
+                    widget.rect.left_top(),
+                    Vec2::new(40.0, widget.rect.height()),
+                );
+                let low_response = ui
+                    .allocate_rect(low_rect, Sense::click())
+                    .on_hover_cursor(CursorIcon::Text);
+
+                let high_rect = Rect::from_min_size(
+                    widget.rect.right_top() - Vec2::new(40.0, 0.0),
+                    Vec2::new(40.0, widget.rect.height()),
+                );
+                let high_response = ui
+                    .allocate_rect(high_rect, Sense::click())
+                    .on_hover_cursor(CursorIcon::Text);
+
+                (low_response, high_response)
+            })
+            .for_each(|(low, high)| {
+                create_popup(&mut mem, low, Axis::X, true);
+                create_popup(&mut mem, high, Axis::X, false);
+            });
+
+        y_axis_widgets
+            .iter()
+            .map(|widget| {
+                let low_rect = Rect::from_min_size(
+                    widget.rect.left_bottom() - Vec2::new(0.0, 40.0),
+                    Vec2::new(widget.rect.width(), 40.0),
+                );
+                let low_response = ui
+                    .allocate_rect(low_rect, Sense::click())
+                    .on_hover_cursor(CursorIcon::Text);
+
+                let high_rect = Rect::from_min_size(
+                    widget.rect.left_top(),
+                    Vec2::new(widget.rect.width(), 40.0),
+                );
+                let high_response = ui
+                    .allocate_rect(high_rect, Sense::click())
+                    .on_hover_cursor(CursorIcon::Text);
+
+                (low_response, high_response)
+            })
+            .for_each(|(low, high)| {
+                create_popup(&mut mem, low, Axis::Y, true);
+                create_popup(&mut mem, high, Axis::Y, false);
+            });
+
         // Drag axes to zoom:
         for d in 0..2 {
             if allow_axis_zoom_drag[d] {
@@ -1163,6 +1240,10 @@ impl<'a> Plot<'a> {
             }
         }
 
+        if allow_axis_zoom_drag.all() {
+            corner_drag_zoom(plot_rect, corner_responses, &mut mem);
+        }
+
         // Zooming
         let mut boxed_zoom_rect = None;
         if allow_boxed_zoom {
@@ -1177,40 +1258,67 @@ impl<'a> Plot<'a> {
                 // while dragging prepare a Shape and draw it later on top of the plot
                 if response.dragged_by(boxed_zoom_pointer_button) {
                     response = response.on_hover_cursor(CursorIcon::ZoomIn);
-                    let rect = epaint::Rect::from_two_pos(box_start_pos, box_end_pos);
-                    boxed_zoom_rect = Some((
-                        epaint::RectShape::stroke(
-                            rect,
-                            0.0,
-                            epaint::Stroke::new(4., Color32::DARK_BLUE),
-                            egui::StrokeKind::Middle,
-                        ), // Outer stroke
-                        epaint::RectShape::stroke(
-                            rect,
-                            0.0,
-                            epaint::Stroke::new(2., Color32::WHITE),
-                            egui::StrokeKind::Middle,
-                        ), // Inner stroke
+                    boxed_zoom_rect = Some(ZoomType::new_from_corners(
+                        box_start_pos,
+                        box_end_pos,
+                        data_aspect.is_none(),
                     ));
                 }
                 // when the click is release perform the zoom
                 if response.drag_stopped() {
-                    let box_start_pos = mem.transform.value_from_position(box_start_pos);
-                    let box_end_pos = mem.transform.value_from_position(box_end_pos);
-                    let new_bounds = PlotBounds {
-                        min: [
-                            box_start_pos.x.min(box_end_pos.x),
-                            box_start_pos.y.min(box_end_pos.y),
-                        ],
-                        max: [
-                            box_start_pos.x.max(box_end_pos.x),
-                            box_start_pos.y.max(box_end_pos.y),
-                        ],
-                    };
-                    if new_bounds.is_valid() {
-                        mem.transform.set_bounds(new_bounds);
-                        mem.auto_bounds = false.into();
+                    // TODO(Mick): not a fan of the recalculate
+                    match ZoomType::new_from_corners(
+                        box_start_pos,
+                        box_end_pos,
+                        data_aspect.is_none(),
+                    ) {
+                        ZoomType::Rect(rect) => {
+                            let top_left = mem.transform.value_from_position(rect.left_top());
+                            let bottom_right =
+                                mem.transform.value_from_position(rect.right_bottom());
+                            let new_bounds = PlotBounds {
+                                min: [top_left.x, bottom_right.y],
+                                max: [bottom_right.x, top_left.y],
+                            };
+                            if new_bounds.is_valid() {
+                                mem.transform.set_bounds(new_bounds);
+                                mem.auto_bounds = false.into();
+                            }
+                        }
+                        ZoomType::Horizontal(rect) => {
+                            let top_left = mem.transform.value_from_position(rect.left_top());
+                            let bottom_right =
+                                mem.transform.value_from_position(rect.right_bottom());
+                            let selected_bounds = PlotBounds {
+                                min: [top_left.x, bottom_right.y],
+                                max: [bottom_right.x, top_left.y],
+                            };
+
+                            let mut new_bounds = *mem.transform.bounds();
+                            new_bounds.set_x(&selected_bounds);
+                            if new_bounds.is_valid() {
+                                mem.transform.set_bounds(new_bounds);
+                                mem.auto_bounds = false.into();
+                            }
+                        }
+                        ZoomType::Vertical(rect) => {
+                            let top_left = mem.transform.value_from_position(rect.left_top());
+                            let bottom_right =
+                                mem.transform.value_from_position(rect.right_bottom());
+                            let selected_bounds = PlotBounds {
+                                min: [top_left.x, bottom_right.y],
+                                max: [bottom_right.x, top_left.y],
+                            };
+
+                            let mut new_bounds = *mem.transform.bounds();
+                            new_bounds.set_y(&selected_bounds);
+                            if new_bounds.is_valid() {
+                                mem.transform.set_bounds(new_bounds);
+                                mem.auto_bounds = false.into();
+                            }
+                        }
                     }
+
                     // reset the boxed zoom state
                     mem.last_click_pos_for_zoom = None;
                 }
@@ -1318,12 +1426,7 @@ impl<'a> Plot<'a> {
         let (plot_cursors, mut hovered_plot_item) = prepared.ui(ui, &response);
 
         if let Some(boxed_zoom_rect) = boxed_zoom_rect {
-            ui.painter()
-                .with_clip_rect(plot_rect)
-                .add(boxed_zoom_rect.0);
-            ui.painter()
-                .with_clip_rect(plot_rect)
-                .add(boxed_zoom_rect.1);
+            boxed_zoom_rect.paint(ui, plot_rect);
         }
 
         if let Some(mut legend) = legend {
@@ -1382,13 +1485,227 @@ impl<'a> Plot<'a> {
     }
 }
 
+enum ZoomType {
+    Rect(Rect),
+    Horizontal(Rect),
+    Vertical(Rect),
+}
+
+impl ZoomType {
+    // "buffer" on `min` before rect should be used
+    // NOTE: May want to be based on the axes?
+    pub const BUFFER: f32 = 100.0;
+    // if the ratio between `min` and `max` is about 10% different or less, its "square"
+    pub const SQUARENESS_THRESHOLD: f32 = 0.1;
+
+    // NOTE(Mick): non-Rect zooming is only supported if proportional axes is off.
+    fn new_from_corners(start: Pos2, end: Pos2, supports_single_dimension_zoom: bool) -> Self {
+        let rect = epaint::Rect::from_two_pos(start, end);
+
+        let (min, is_vertical) = {
+            let Vec2 { x, y } = rect.size();
+            if x < y { (x, true) } else { (y, false) }
+        };
+
+        let height = egui::vec2(0.0, rect.height());
+        let width = egui::vec2(rect.width(), 0.0);
+        let half_buffer_x = egui::vec2(Self::BUFFER / 2.0, 0.0);
+        let half_buffer_y = egui::vec2(0.0, Self::BUFFER / 2.0);
+
+        if !supports_single_dimension_zoom {
+            return Self::Rect(rect);
+        }
+
+        if min > (Self::BUFFER / 2.0)
+            || (rect.aspect_ratio() - 1.0).abs() < Self::SQUARENESS_THRESHOLD
+        {
+            Self::Rect(rect)
+        } else if is_vertical {
+            let (top_center, bottom_center) = if start.y > end.y {
+                (start, start - height)
+            } else {
+                (start + height, start)
+            };
+            let top_left = top_center - half_buffer_x;
+            let bottom_right = bottom_center + half_buffer_x;
+
+            Self::Vertical(Rect::from_two_pos(top_left, bottom_right))
+        } else {
+            let (left_center, right_center) = if start.x > end.x {
+                (start - width, start)
+            } else {
+                (start, start + width)
+            };
+            let top_left = left_center + half_buffer_y;
+            let bottom_right = right_center - half_buffer_y;
+
+            Self::Horizontal(Rect::from_two_pos(top_left, bottom_right))
+        }
+    }
+
+    fn paint(&self, ui: &Ui, clip_rect: Rect) {
+        let painter = ui.painter().with_clip_rect(clip_rect);
+        match self {
+            Self::Rect(rect) => {
+                // Outer stroke
+                painter.add(epaint::RectShape::stroke(
+                    *rect,
+                    0.0,
+                    epaint::Stroke::new(4., Color32::DARK_BLUE),
+                    egui::StrokeKind::Middle,
+                ));
+                // Inner stroke
+                painter.add(epaint::RectShape::stroke(
+                    *rect,
+                    0.0,
+                    epaint::Stroke::new(2., Color32::WHITE),
+                    egui::StrokeKind::Middle,
+                ));
+            }
+            Self::Horizontal(rect) => {
+                // Left Outer stroke
+                painter.add(epaint::Shape::line_segment(
+                    [rect.left_top(), rect.left_bottom()],
+                    epaint::Stroke::new(4., Color32::DARK_BLUE),
+                ));
+                // Right Outer stroke
+                painter.add(epaint::Shape::line_segment(
+                    [rect.right_top(), rect.right_bottom()],
+                    epaint::Stroke::new(4., Color32::DARK_BLUE),
+                ));
+                // Left Inner stroke
+                painter.add(epaint::Shape::line_segment(
+                    [rect.left_top(), rect.left_bottom()],
+                    epaint::Stroke::new(2., Color32::WHITE),
+                ));
+                // Right Inner stroke
+                painter.add(epaint::Shape::line_segment(
+                    [rect.right_top(), rect.right_bottom()],
+                    epaint::Stroke::new(2., Color32::WHITE),
+                ));
+            }
+            Self::Vertical(rect) => {
+                // Top Outer stroke
+                painter.add(epaint::Shape::line_segment(
+                    [rect.left_top(), rect.right_top()],
+                    epaint::Stroke::new(4., Color32::DARK_BLUE),
+                ));
+                // Bottom Outer stroke
+                painter.add(epaint::Shape::line_segment(
+                    [rect.left_bottom(), rect.right_bottom()],
+                    epaint::Stroke::new(4., Color32::DARK_BLUE),
+                ));
+                // Top Inner stroke
+                painter.add(epaint::Shape::line_segment(
+                    [rect.left_top(), rect.right_top()],
+                    epaint::Stroke::new(2., Color32::WHITE),
+                ));
+                // Bottom Inner stroke
+                painter.add(epaint::Shape::line_segment(
+                    [rect.left_bottom(), rect.right_bottom()],
+                    epaint::Stroke::new(2., Color32::WHITE),
+                ));
+            }
+        }
+    }
+}
+
+// TODO(Mick): figure out the consts for zooming behavior
+fn corner_drag_zoom(
+    plot_rect: Rect,
+    corner_responses: Corners<Option<Response>>,
+    mem: &mut PlotMemory,
+) {
+    for (response, corner) in corner_responses
+        .into_iter()
+        .filter_map(|(r, corner)| r.map(|r| (r, corner)))
+        .filter(|(r, _)| r.dragged_by(PointerButton::Primary))
+    {
+        let delta = response.drag_delta();
+        let zoom_scale = Vec2::splat(0.02);
+
+        let zoom_scale_dir = match corner {
+            axis::CornerType::NorthEast => Vec2::new(1.0, -1.0),
+            axis::CornerType::NorthWest => Vec2::splat(-1.0),
+            axis::CornerType::SouthWest => Vec2::new(-1.0, 1.0),
+            axis::CornerType::SouthEast => Vec2::splat(1.0),
+        };
+
+        let zoom = Vec2::ONE
+            + (zoom_scale * zoom_scale_dir * delta).clamp(Vec2::splat(-1.0), Vec2::splat(1.0));
+
+        let zoom_center = match corner {
+            axis::CornerType::NorthEast => plot_rect.left_bottom(),
+            axis::CornerType::NorthWest => plot_rect.right_bottom(),
+            axis::CornerType::SouthWest => plot_rect.right_top(),
+            axis::CornerType::SouthEast => plot_rect.left_top(),
+        };
+
+        if zoom != Vec2::ONE {
+            mem.transform.zoom(zoom, zoom_center);
+            mem.auto_bounds = false.into();
+        }
+    }
+}
+
+fn create_popup(mem: &mut PlotMemory, response: Response, axis: Axis, min: bool) {
+    let salt = format!("Popup {:?} {}", axis, if min { "min" } else { "max" });
+    let current_value = {
+        let bounds = mem.transform.bounds();
+        if min {
+            bounds.min[axis as usize]
+        } else {
+            bounds.max[axis as usize]
+        }
+        .to_string()
+    };
+
+    egui::Popup::from_toggle_button_response(&response)
+        .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+        .show(|ui| {
+            let popup_id = ui.auto_id_with(salt);
+            let mut text = ui
+                .data_mut(|data| data.remove_temp(popup_id))
+                .unwrap_or(current_value.clone());
+            let response = ui.text_edit_singleline(&mut text);
+
+            if response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                if let Ok(output) = text.parse() {
+                    let mut old_bounds = *mem.transform.bounds();
+
+                    match (axis, min) {
+                        (Axis::X, true) => {
+                            old_bounds.set_x_min(output);
+                        }
+                        (Axis::X, false) => {
+                            old_bounds.set_x_max(output);
+                        }
+                        (Axis::Y, true) => {
+                            old_bounds.set_y_min(output);
+                        }
+                        (Axis::Y, false) => {
+                            old_bounds.set_y_max(output);
+                        }
+                    }
+
+                    mem.transform.set_bounds(old_bounds);
+                    mem.auto_bounds = false.into();
+
+                    ui.close();
+                }
+            } else if text != current_value {
+                ui.data_mut(|data| data.insert_temp(popup_id, text));
+            }
+        });
+}
+
 /// Returns the rect left after adding axes.
 fn axis_widgets<'a>(
     mem: Option<&PlotMemory>,
     show_axes: impl Into<Vec2b>,
     complete_rect: Rect,
     [x_axes, y_axes]: [&'a [AxisHints<'a>]; 2],
-) -> ([Vec<AxisWidget<'a>>; 2], Rect) {
+) -> AxisWidgets<'a> {
     // Next we want to create this layout.
     // Indices are only examples.
     //
@@ -1415,9 +1732,17 @@ fn axis_widgets<'a>(
 
     let mut x_axis_widgets = Vec::<AxisWidget<'_>>::new();
     let mut y_axis_widgets = Vec::<AxisWidget<'_>>::new();
+    let mut corner_rects = Corners {
+        ne: Rect::ZERO,
+        nw: Rect::ZERO,
+        sw: Rect::ZERO,
+        se: Rect::ZERO,
+    };
 
     // Will shrink as we add more axes.
     let mut rect_left = complete_rect;
+
+    let has_corners = show_axes.all();
 
     if show_axes.x {
         // We will fix this later, once we know how much space the y axes take up.
@@ -1432,12 +1757,24 @@ fn axis_widgets<'a>(
 
             let rect = match VPlacement::from(cfg.placement) {
                 VPlacement::Bottom => {
+                    if has_corners {
+                        // bottom corners' tops move upwards
+                        *corner_rects.se.top_mut() -= height;
+                        *corner_rects.sw.top_mut() -= height;
+                    }
+
                     let bottom = rect_left.bottom();
                     *rect_left.bottom_mut() -= height;
                     let top = rect_left.bottom();
                     Rect::from_x_y_ranges(initial_x_range, top..=bottom)
                 }
                 VPlacement::Top => {
+                    if has_corners {
+                        // top corners' bottoms move downwards
+                        *corner_rects.ne.bottom_mut() += height;
+                        *corner_rects.nw.bottom_mut() += height;
+                    }
+
                     let top = rect_left.top();
                     *rect_left.top_mut() += height;
                     let bottom = rect_left.top();
@@ -1445,6 +1782,7 @@ fn axis_widgets<'a>(
                 }
             };
             x_axis_widgets.push(AxisWidget::new(cfg.clone(), rect));
+            // also put a high/low rect that senses clicks and can create a popup "invisible" textedit
         }
     }
     if show_axes.y {
@@ -1460,12 +1798,24 @@ fn axis_widgets<'a>(
 
             let rect = match HPlacement::from(cfg.placement) {
                 HPlacement::Left => {
+                    if has_corners {
+                        // left corners' rights move rightward
+                        *corner_rects.nw.right_mut() += width;
+                        *corner_rects.sw.right_mut() += width;
+                    }
+
                     let left = rect_left.left();
                     *rect_left.left_mut() += width;
                     let right = rect_left.left();
                     Rect::from_x_y_ranges(left..=right, plot_y_range)
                 }
                 HPlacement::Right => {
+                    if has_corners {
+                        // right corners' lefts move leftward
+                        *corner_rects.ne.left_mut() -= width;
+                        *corner_rects.se.left_mut() -= width;
+                    }
+
                     let right = rect_left.right();
                     *rect_left.right_mut() -= width;
                     let left = rect_left.right();
@@ -1497,7 +1847,102 @@ fn axis_widgets<'a>(
         widget.rect = Rect::from_x_y_ranges(plot_rect.x_range(), widget.rect.y_range());
     }
 
-    ([x_axis_widgets, y_axis_widgets], plot_rect)
+    // gets the union of top and bottom rects, if they exist
+    let (bottom, top) = x_axis_widgets
+        .iter()
+        .map(|widget| (widget.rect, widget.hints.placement))
+        .fold((None, None), |mut acc, (rect, placement)| {
+            match placement {
+                Placement::LeftBottom => {
+                    acc.0 = Some(acc.0.get_or_insert(rect).union(rect));
+                }
+                Placement::RightTop => {
+                    acc.1 = Some(acc.1.get_or_insert(rect).union(rect));
+                }
+            }
+
+            acc
+        });
+
+    // gets the union of the left and right rects, if they exist
+    let (left, right) = y_axis_widgets
+        .iter()
+        .map(|widget| (widget.rect, widget.hints.placement))
+        .fold((None, None), |mut acc, (rect, placement)| {
+            match placement {
+                Placement::LeftBottom => {
+                    acc.0 = Some(acc.0.get_or_insert(rect).union(rect));
+                }
+                Placement::RightTop => {
+                    acc.1 = Some(acc.1.get_or_insert(rect).union(rect));
+                }
+            }
+            acc
+        });
+
+    let corner_rects = corner_rects.map(|mut rect, corner| {
+        // update the locations of the rects based on the x/y axis widget total locations
+
+        match corner {
+            axis::CornerType::NorthEast => {
+                // translate the rect by top/right
+                top.zip(right)
+                    .map(|(top, right)| Pos2 {
+                        x: right.center().x,
+                        y: top.center().y,
+                    })
+                    .map(|center| {
+                        rect.set_center(center);
+                        rect
+                    })
+            }
+            axis::CornerType::NorthWest => {
+                // translate the rect by top/left
+                top.zip(left)
+                    .map(|(top, left)| Pos2 {
+                        x: left.center().x,
+                        y: top.center().y,
+                    })
+                    .map(|center| {
+                        rect.set_center(center);
+                        rect
+                    })
+            }
+            axis::CornerType::SouthWest => {
+                // translate the rect by bot/left
+                bottom
+                    .zip(left)
+                    .map(|(bottom, left)| Pos2 {
+                        x: left.center().x,
+                        y: bottom.center().y,
+                    })
+                    .map(|center| {
+                        rect.set_center(center);
+                        rect
+                    })
+            }
+            axis::CornerType::SouthEast => {
+                // translate the rect by bot/right
+                bottom
+                    .zip(right)
+                    .map(|(bottom, right)| Pos2 {
+                        x: right.center().x,
+                        y: bottom.center().y,
+                    })
+                    .map(|center| {
+                        rect.set_center(center);
+                        rect
+                    })
+            }
+        }
+    });
+
+    AxisWidgets {
+        rect: plot_rect,
+        x: x_axis_widgets,
+        y: y_axis_widgets,
+        corners: corner_rects,
+    }
 }
 
 /// User-requested modifications to the plot bounds. We collect them in the plot build function to later apply

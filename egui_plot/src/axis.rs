@@ -382,3 +382,67 @@ impl<'a> AxisWidget<'a> {
         thickness
     }
 }
+
+pub(crate) struct AxisWidgets<'a> {
+    pub rect: Rect,
+    pub x: Vec<AxisWidget<'a>>,
+    pub y: Vec<AxisWidget<'a>>,
+    pub corners: Corners<Option<Rect>>,
+}
+
+#[derive(Debug)]
+pub(crate) struct Corners<T> {
+    pub ne: T,
+    pub nw: T,
+    pub sw: T,
+    pub se: T,
+}
+
+impl<T: Default> Default for Corners<T> {
+    fn default() -> Self {
+        Self {
+            ne: T::default(),
+            nw: T::default(),
+            sw: T::default(),
+            se: T::default(),
+        }
+    }
+}
+
+impl<T> IntoIterator for Corners<T> {
+    type Item = (T, CornerType);
+
+    type IntoIter = std::array::IntoIter<Self::Item, 4>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        let Self { ne, nw, sw, se } = self;
+
+        [
+            (ne, CornerType::NorthEast),
+            (nw, CornerType::NorthWest),
+            (sw, CornerType::SouthWest),
+            (se, CornerType::SouthEast),
+        ]
+        .into_iter()
+    }
+}
+
+impl<T> Corners<T> {
+    pub fn map<U>(self, mut f: impl FnMut(T, CornerType) -> U) -> Corners<U> {
+        let Self { ne, nw, sw, se } = self;
+        Corners {
+            ne: (f)(ne, CornerType::NorthEast),
+            nw: (f)(nw, CornerType::NorthWest),
+            sw: (f)(sw, CornerType::SouthWest),
+            se: (f)(se, CornerType::SouthEast),
+        }
+    }
+}
+
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+pub(crate) enum CornerType {
+    NorthEast,
+    NorthWest,
+    SouthWest,
+    SouthEast,
+}
