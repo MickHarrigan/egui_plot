@@ -262,6 +262,26 @@ impl PlotBounds {
         self.min[1] = -y_abs;
         self.max[1] = y_abs;
     }
+
+    #[inline]
+    pub fn set_x_min(&mut self, new_min: f64) {
+        self.min[0] = new_min;
+    }
+
+    #[inline]
+    pub fn set_y_min(&mut self, new_min: f64) {
+        self.min[1] = new_min;
+    }
+
+    #[inline]
+    pub fn set_x_max(&mut self, new_max: f64) {
+        self.max[0] = new_max;
+    }
+
+    #[inline]
+    pub fn set_y_max(&mut self, new_max: f64) {
+        self.max[1] = new_max;
+    }
 }
 
 /// Contains the screen rectangle and the plot bounds and provides methods to transform between them.

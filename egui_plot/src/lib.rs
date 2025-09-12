@@ -880,7 +880,8 @@ impl<'a> Plot<'a> {
         let x_axis_responses = x_axis_widgets
             .iter()
             .map(|widget| {
-                let axis_response = ui.allocate_rect(widget.rect, Sense::drag());
+                // FIXME(Mick): set back to drag!
+                let axis_response = ui.allocate_rect(widget.rect, Sense::click_and_drag());
                 if allow_axis_zoom_drag.x {
                     axis_response.on_hover_cursor(CursorIcon::ResizeHorizontal)
                 } else {
@@ -892,7 +893,8 @@ impl<'a> Plot<'a> {
         let y_axis_responses = y_axis_widgets
             .iter()
             .map(|widget| {
-                let axis_response = ui.allocate_rect(widget.rect, Sense::drag());
+                // FIXME(Mick): set back to drag!
+                let axis_response = ui.allocate_rect(widget.rect, Sense::click_and_drag());
 
                 if allow_axis_zoom_drag.y {
                     axis_response.on_hover_cursor(CursorIcon::ResizeVertical)
@@ -1127,8 +1129,44 @@ impl<'a> Plot<'a> {
             mem.auto_bounds = mem.auto_bounds.and(!allow_drag);
         }
 
-        // Drag axes to zoom:
         for d in 0..2 {
+            // Direct bounds setting via popup
+            for axis_response in if d == 0 {
+                &x_axis_responses
+            } else {
+                &y_axis_responses
+            } {
+                egui::Popup::from_toggle_button_response(axis_response)
+                    .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+                    .show(|ui| {
+                        let popup_id = ui.auto_id_with(format!("popup {d} max"));
+                        let mut text = ui
+                            .data_mut(|data| data.remove_temp(popup_id))
+                            .unwrap_or_else(|| mem.transform.bounds().max[d].to_string());
+                        let response = ui.text_edit_singleline(&mut text);
+
+                        if response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                            if let Ok(output) = text.parse() {
+                                let mut old_bounds = *mem.transform.bounds();
+
+                                if d == 0 {
+                                    old_bounds.set_x_max(output);
+                                } else {
+                                    old_bounds.set_y_max(output);
+                                }
+
+                                mem.transform.set_bounds(old_bounds);
+                                mem.auto_bounds = false.into();
+
+                                ui.close();
+                            }
+                        } else if text != mem.transform.bounds().max[d].to_string() {
+                            ui.data_mut(|data| data.insert_temp(popup_id, text));
+                        }
+                    });
+            }
+
+            // Drag axes to zoom:
             if allow_axis_zoom_drag[d] {
                 if let Some(axis_response) = (if d == 0 {
                     &x_axis_responses
@@ -1445,6 +1483,7 @@ fn axis_widgets<'a>(
                 }
             };
             x_axis_widgets.push(AxisWidget::new(cfg.clone(), rect));
+            // also put a high/low rect that senses clicks and can create a popup "invisible" textedit
         }
     }
     if show_axes.y {
