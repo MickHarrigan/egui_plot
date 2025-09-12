@@ -1129,44 +1129,60 @@ impl<'a> Plot<'a> {
             mem.auto_bounds = mem.auto_bounds.and(!allow_drag);
         }
 
+        x_axis_widgets
+            .iter()
+            .map(|widget| {
+                let low_rect = Rect::from_min_size(
+                    widget.rect.left_top(),
+                    Vec2::new(40.0, widget.rect.height()),
+                );
+                let low_response = ui
+                    .allocate_rect(low_rect, Sense::click())
+                    .on_hover_cursor(CursorIcon::Text);
+
+                let high_rect = Rect::from_min_size(
+                    widget.rect.right_top() - Vec2::new(40.0, 0.0),
+                    Vec2::new(40.0, widget.rect.height()),
+                );
+                let high_response = ui
+                    .allocate_rect(high_rect, Sense::click())
+                    .on_hover_cursor(CursorIcon::Text);
+
+                (low_response, high_response)
+            })
+            .for_each(|(low, high)| {
+                create_popup(&mut mem, low, Axis::X, true);
+                create_popup(&mut mem, high, Axis::X, false);
+            });
+
+        y_axis_widgets
+            .iter()
+            .map(|widget| {
+                let low_rect = Rect::from_min_size(
+                    widget.rect.left_bottom() - Vec2::new(0.0, 40.0),
+                    Vec2::new(widget.rect.width(), 40.0),
+                );
+                let low_response = ui
+                    .allocate_rect(low_rect, Sense::click())
+                    .on_hover_cursor(CursorIcon::Text);
+
+                let high_rect = Rect::from_min_size(
+                    widget.rect.left_top(),
+                    Vec2::new(widget.rect.width(), 40.0),
+                );
+                let high_response = ui
+                    .allocate_rect(high_rect, Sense::click())
+                    .on_hover_cursor(CursorIcon::Text);
+
+                (low_response, high_response)
+            })
+            .for_each(|(low, high)| {
+                create_popup(&mut mem, low, Axis::Y, true);
+                create_popup(&mut mem, high, Axis::Y, false);
+            });
+
+        // Drag axes to zoom:
         for d in 0..2 {
-            // Direct bounds setting via popup
-            for axis_response in if d == 0 {
-                &x_axis_responses
-            } else {
-                &y_axis_responses
-            } {
-                egui::Popup::from_toggle_button_response(axis_response)
-                    .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
-                    .show(|ui| {
-                        let popup_id = ui.auto_id_with(format!("popup {d} max"));
-                        let mut text = ui
-                            .data_mut(|data| data.remove_temp(popup_id))
-                            .unwrap_or_else(|| mem.transform.bounds().max[d].to_string());
-                        let response = ui.text_edit_singleline(&mut text);
-
-                        if response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
-                            if let Ok(output) = text.parse() {
-                                let mut old_bounds = *mem.transform.bounds();
-
-                                if d == 0 {
-                                    old_bounds.set_x_max(output);
-                                } else {
-                                    old_bounds.set_y_max(output);
-                                }
-
-                                mem.transform.set_bounds(old_bounds);
-                                mem.auto_bounds = false.into();
-
-                                ui.close();
-                            }
-                        } else if text != mem.transform.bounds().max[d].to_string() {
-                            ui.data_mut(|data| data.insert_temp(popup_id, text));
-                        }
-                    });
-            }
-
-            // Drag axes to zoom:
             if allow_axis_zoom_drag[d] {
                 if let Some(axis_response) = (if d == 0 {
                     &x_axis_responses
@@ -1418,6 +1434,57 @@ impl<'a> Plot<'a> {
             hovered_plot_item,
         }
     }
+}
+
+fn create_popup(mem: &mut PlotMemory, response: Response, axis: Axis, min: bool) {
+    let salt = format!("Popup {:?} {}", axis, if min { "min" } else { "max" });
+    let current_value = {
+        let bounds = mem.transform.bounds();
+        if min {
+            bounds.min[axis as usize]
+        } else {
+            bounds.max[axis as usize]
+        }
+        .to_string()
+    };
+
+    egui::Popup::from_toggle_button_response(&response)
+        .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+        .show(|ui| {
+            let popup_id = ui.auto_id_with(salt);
+            let mut text = ui
+                .data_mut(|data| data.remove_temp(popup_id))
+                .unwrap_or(current_value.clone());
+            let response = ui.text_edit_singleline(&mut text);
+
+            if response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                if let Ok(output) = text.parse() {
+                    let mut old_bounds = *mem.transform.bounds();
+
+                    match (axis, min) {
+                        (Axis::X, true) => {
+                            old_bounds.set_x_min(output);
+                        }
+                        (Axis::X, false) => {
+                            old_bounds.set_x_max(output);
+                        }
+                        (Axis::Y, true) => {
+                            old_bounds.set_y_min(output);
+                        }
+                        (Axis::Y, false) => {
+                            old_bounds.set_y_max(output);
+                        }
+                    }
+
+                    mem.transform.set_bounds(old_bounds);
+                    mem.auto_bounds = false.into();
+
+                    ui.close();
+                }
+            } else if text != current_value {
+                ui.data_mut(|data| data.insert_temp(popup_id, text));
+            }
+        });
 }
 
 /// Returns the rect left after adding axes.
