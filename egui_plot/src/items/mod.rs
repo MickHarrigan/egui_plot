@@ -4,15 +4,14 @@
 use std::{ops::RangeInclusive, sync::Arc};
 
 use egui::{
-    Align2, Color32, CornerRadius, Id, ImageOptions, Mesh, NumExt as _, PopupAnchor, Pos2, Rect,
-    Rgba, Shape, Stroke, TextStyle, TextureId, Ui, Vec2, WidgetText,
     emath::Rot2,
     epaint::{CircleShape, PathStroke, TextShape},
-    pos2, vec2,
+    pos2, vec2, Align2, Color32, CornerRadius, Id, ImageOptions, Mesh, NumExt as _, PopupAnchor,
+    Pos2, Rect, Rgba, Shape, Stroke, TextStyle, TextureId, Ui, Vec2, WidgetText,
 };
 
 use emath::Float as _;
-use rect_elem::{RectElement, highlighted_color};
+use rect_elem::{highlighted_color, RectElement};
 
 use super::{Cursor, LabelFormatter, PlotBounds, PlotTransform};
 
@@ -523,7 +522,7 @@ impl PlotItem for Line<'_> {
                     (bounds.height() / 2.0) as f32,
                 );
 
-                bounds.contains_buffered(buffer, *point)
+                bounds.contains_buffered(buffer, point)
             })
             .map(|v| transform.position_from_point(v))
             .collect();
