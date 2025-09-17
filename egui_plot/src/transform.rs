@@ -262,6 +262,22 @@ impl PlotBounds {
         self.min[1] = -y_abs;
         self.max[1] = y_abs;
     }
+
+    #[inline]
+    pub fn contains(&self, point: &PlotPoint) -> bool {
+        self.min[0] <= point.x
+            && point.x <= self.max[0]
+            && self.min[1] <= point.y
+            && point.y <= self.max[1]
+    }
+
+    #[inline]
+    pub fn contains_buffered(&self, buffer: Vec2, point: &PlotPoint) -> bool {
+        self.min[0] - buffer.x as f64 <= point.x
+            && point.x <= self.max[0] + buffer.x as f64
+            && self.min[1] - buffer.y as f64 <= point.y
+            && point.y <= self.max[1] + buffer.y as f64
+    }
 }
 
 /// Contains the screen rectangle and the plot bounds and provides methods to transform between them.

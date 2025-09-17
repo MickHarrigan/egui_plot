@@ -516,6 +516,15 @@ impl PlotItem for Line<'_> {
         let values_tf: Vec<_> = series
             .points()
             .iter()
+            .filter(|point| {
+                let bounds = transform.bounds();
+                let buffer = vec2(
+                    (bounds.width() / 2.0) as f32,
+                    (bounds.height() / 2.0) as f32,
+                );
+
+                bounds.contains_buffered(buffer, *point)
+            })
             .map(|v| transform.position_from_point(v))
             .collect();
         let n_values = values_tf.len();
